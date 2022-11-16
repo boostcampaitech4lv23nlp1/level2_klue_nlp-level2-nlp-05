@@ -1,9 +1,11 @@
+import pickle as pickle
 import os
 import pandas as pd
 import torch
+import sklearn
 import numpy as np
-from transformers import AutoTokenizer, AutoConfig, AutoModelForSequenceClassification, Trainer, TrainingArguments, EarlyStoppingCallback
-from transformers import RobertaConfig, RobertaTokenizer, RobertaForSequenceClassification, BertTokenizer
+from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
+from transformers import AutoTokenizer, AutoConfig, AutoModelForSequenceClassification, Trainer, TrainingArguments, RobertaConfig, RobertaTokenizer, RobertaForSequenceClassification, BertTokenizer, EarlyStoppingCallback
 # https://huggingface.co/transformers/v3.0.2/_modules/transformers/trainer.html
 import data_loaders.data_loader as dataloader
 import utils.util as utils
@@ -14,6 +16,14 @@ from transformers import DataCollatorWithPadding
 
 import mlflow
 import mlflow.sklearn
+
+from ray import air, tune
+from ray.tune.suggest.hyperopt import HyperOptSearch
+from ray.tune.schedulers import ASHAScheduler
+# from ray.air import session
+# from ray.air.callbacks.mlflow import MLflowLoggerCallback
+# from ray.tune.integration.mlflow import mlflow_mixin
+
 from azureml.core import Workspace
 import argparse
 
@@ -34,6 +44,25 @@ def start_mlflow(experiment_name):
   # Start the run
   mlflow_run = mlflow.start_run()
 
+# for ray_tune har
+def ray_hp_space(trial):
+  """_summary_
+  for ray_tune hyperparameter setting
+  Args:
+      trial (_type_): _description_
+
+  Returns:
+      _type_: _description_
+  """
+  return {
+      "learning_rate": tune.loguniform(1e-6, 1e-4),
+      "per_device_train_batch_size": tune.choice([16, 32, 64, 128]),
+  }
+
+# 여기서 하드코딩 말고 config에서 model_name, num_label을 가져올 방법은 없을까....?
+# def model_init(trial) :
+#     print('😀 This is trial :', trial)
+#     return custom.CustomModel('klue/roberta-base', 30)
 
 def train(args):
   #huggingface-cli login  #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
@@ -65,6 +94,11 @@ def train(args):
   model.parameters
   model.to(device)
 
+  # model_init을 여기다가 선언해도 되나???
+  def model_init(trial) :
+    print('😀 This is trial :', trial)
+    return custom.CustomModel(MODEL_NAME, num_labels)
+
   # optimizer와 learning rate scheduler를 지정해줍니다.
   '''optimizer=transformers.AdamW(model.parameters(), lr=5e-5)
   scheduler=transformers.get_cosine_schedule_with_warmup(
@@ -73,7 +107,7 @@ def train(args):
       num_training_steps=60000)
   optimizers = optimizer, scheduler'''
 
-  
+
   # 사용한 option 외에도 다양한 option들이 있습니다.
   # https://huggingface.co/transformers/main_classes/trainer.html#trainingarguments 참고해주세요.
   training_args = TrainingArguments(
@@ -81,8 +115,8 @@ def train(args):
     output_dir='./output',          # output directory
     save_total_limit=5,              # number of total save model.
     save_steps=500,                 # model saving step.
-    num_train_epochs=args.max_epoch,              # total number of training epochs
-    learning_rate=args.learning_rate,               # learning_rate
+    # num_train_epochs=args.max_epoch,              # total number of training epochs
+    # learning_rate=args.learning_rate,               # learning_rate
     per_device_train_batch_size=args.batch_size,  # batch size per device during training
     per_device_eval_batch_size=args.batch_size,   # batch size for evaluation
     warmup_steps=500,                # number of warmup steps for learning rate scheduler
@@ -97,6 +131,7 @@ def train(args):
     load_best_model_at_end = True,
     push_to_hub=True
   )
+
   trainer = Trainer(
     model=model,                         # the instantiated 🤗 Transformers model to be trained
     args=training_args,                  # training arguments, defined above
@@ -105,11 +140,20 @@ def train(args):
     compute_metrics=utils.compute_metrics,         # define metrics function
     data_collator=data_collator,
     #optimizers=optimizers,
+    model_init=model_init,
     callbacks = [EarlyStoppingCallback(early_stopping_patience=5)]
   )
 
-  # train model
-  trainer.train()
+  # For Hugging Face hyperparameter_search
+  trainer.hyperparameter_search(
+    direction="maximize",
+    backend="ray",
+    hp_space=ray_hp_space,
+    n_trials=2,
+  )
+
+  # # train model
+  # trainer.train()
   #model.save_pretrained('./best_model')
   mlflow.end_run()
   trainer.push_to_hub()
@@ -136,5 +180,5 @@ if __name__ == '__main__':
   args = parser.parse_args()
 
   # check hyperparameter arguments
-  print(args)
+  # print(args)
   train(args)
