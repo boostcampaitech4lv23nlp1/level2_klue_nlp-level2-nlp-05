@@ -6,6 +6,8 @@ import sklearn
 import numpy as np
 from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score
 from transformers import AutoTokenizer, AutoConfig, AutoModelForSequenceClassification, Trainer, TrainingArguments, RobertaConfig, RobertaTokenizer, RobertaForSequenceClassification, BertTokenizer, EarlyStoppingCallback
+
+from transformers.integrations import MLflowCallback
 # https://huggingface.co/transformers/v3.0.2/_modules/transformers/trainer.html
 import data_loaders.data_loader as dataloader
 import utils.util as utils
@@ -44,28 +46,22 @@ def start_mlflow(experiment_name):
   # Start the run
   mlflow_run = mlflow.start_run()
 
-# for ray_tune har
-def ray_hp_space(trial):
-  """_summary_
-  for ray_tune hyperparameter setting
-  Args:
-      trial (_type_): _description_
-
-  Returns:
-      _type_: _description_
-  """
-  return {
-      "learning_rate": tune.loguniform(1e-6, 1e-4),
-      "per_device_train_batch_size": tune.choice([16, 32, 64, 128]),
-  }
-
+###
 # 여기서 하드코딩 말고 config에서 model_name, num_label을 가져올 방법은 없을까....?
+###
+# # for ray_tune har
+# def ray_hp_space(trial):
+#   return {
+#       "learning_rate": tune.loguniform(1e-6, 1e-4),
+#       "per_device_train_batch_size": tune.choice([64, 128]),
+#   }
+
 # def model_init(trial) :
 #     print('😀 This is trial :', trial)
 #     return custom.CustomModel('klue/roberta-base', 30)
 
 def train(args):
-  #huggingface-cli login  #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
+  # huggingface-cli login  #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
 
   # load model and tokenizer
   # MODEL_NAME = "bert-base-uncased"
@@ -94,6 +90,14 @@ def train(args):
   model.parameters
   model.to(device)
 
+  # for ray_tune hyperparameter
+  # https://docs.ray.io/en/latest/tune/api_docs/search_space.html
+  def ray_hp_space(trial):
+    return {
+        "learning_rate": tune.loguniform(1e-6, 1e-4),
+        "per_device_train_batch_size": tune.choice([32, 64]),
+    }
+
   # model_init을 여기다가 선언해도 되나???
   def model_init(trial) :
     print('😀 This is trial :', trial)
@@ -115,9 +119,9 @@ def train(args):
     output_dir='./output',          # output directory
     save_total_limit=5,              # number of total save model.
     save_steps=500,                 # model saving step.
-    # num_train_epochs=args.max_epoch,              # total number of training epochs
+    num_train_epochs=args.max_epoch,              # total number of training epochs
     # learning_rate=args.learning_rate,               # learning_rate
-    per_device_train_batch_size=args.batch_size,  # batch size per device during training
+    # per_device_train_batch_size=args.batch_size,  # batch size per device during training
     per_device_eval_batch_size=args.batch_size,   # batch size for evaluation
     warmup_steps=500,                # number of warmup steps for learning rate scheduler
     weight_decay=0.01,               # strength of weight decay
@@ -141,29 +145,36 @@ def train(args):
     data_collator=data_collator,
     #optimizers=optimizers,
     model_init=model_init,
-    callbacks = [EarlyStoppingCallback(early_stopping_patience=5)]
+    callbacks = [EarlyStoppingCallback(early_stopping_patience=5), MLflowCallback]
   )
 
   # For Hugging Face hyperparameter_search
-  trainer.hyperparameter_search(
+  # https://huggingface.co/docs/transformers/main_classes/trainer#transformers.Trainer.hyperparameter_search
+  best_run = trainer.hyperparameter_search(
     direction="maximize",
     backend="ray",
     hp_space=ray_hp_space,
     n_trials=2,
   )
+  print(best_run)
+
+  # 참고 예정
+  # https://github.com/huggingface/setfit/blob/ebee18ceaecb4414482e0a6b92c97f3f99309d56/scripts/transformers/run_fewshot.py
 
   # # train model
   # trainer.train()
-  #model.save_pretrained('./best_model')
+  
+  # model.save_pretrained('./best_model')
+  # trainer.save_model('./best_model')
   mlflow.end_run()
-  trainer.push_to_hub()
+  # trainer.push_to_hub()
 
 
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
   parser.add_argument('--model_name', default='klue/roberta-base', type=str)
   parser.add_argument('--batch_size', default=16, type=int)
-  parser.add_argument('--max_epoch', default=5, type=int)
+  parser.add_argument('--max_epoch', default=1, type=int)
   parser.add_argument('--shuffle', default=True)
 
   parser.add_argument('--learning_rate', default=5e-5, type=float)
