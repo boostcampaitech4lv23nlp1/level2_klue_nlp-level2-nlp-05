@@ -89,10 +89,12 @@ ex) train하는 경우 → python main.py -mt
 │   ├── loss.py
 │   ├── metric.py 
 │   └── model.py
+│
 ├──📁prediction
 │   ├── sample_submission.csv
 │   ├── submission.csv
 │   └── submission_18-14-46.csv → inference하는 경우, '날짜-시간-분.csv'가 뒤에 붙음
+│
 ├──📁step_saved_model → save_steps 조건에서 모델이 저장되는 경로.
 │   └──📁klue-roberta-small → 사용한 모델
 │       └──📁18-14-42       → 실행한 날짜-시간-분
@@ -103,9 +105,12 @@ ex) train하는 경우 → python main.py -mt
 │               ├── scheduler.pt
 │               ├── trainer_state.json
 │               └── training_args.bin
+│
 ├── train.py → train 하는 함수
+│
 ├──📁trainer
 │   └── trainer.py
+│
 └──📁utils
     └── util.py
 
