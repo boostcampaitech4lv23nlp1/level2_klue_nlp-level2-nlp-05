@@ -28,7 +28,8 @@ def inference(conf):
     # tokenizer.add_tokens()
 
     # .bin을 가져옵니다.
-    load_model_path = conf.path.load_model_path
+    dir_path = os.getcwd() # 현재 디렉토리 경로
+    load_model_path = os.path.join(dir_path, conf.path.load_model_path)
     checkpoint = torch.load(load_model_path)
     # 모델 구조를 가져옵니다. 반드시 학습할 때 사용했던 동일한 모델 클래스를 사용해야 합니다.
     model = model_arch.Model(conf, len(tokenizer))
