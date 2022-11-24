@@ -6,7 +6,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 import transformers
 from transformers import DataCollatorWithPadding, EarlyStoppingCallback
 from transformers import AutoTokenizer, Trainer, TrainingArguments, AutoConfig
-from transformers import AutoModelForSequenceClassification
+from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast, GPT2ForSequenceClassification
 
 import data_loaders.data_loader as dataloader
 import utils.util as utils
@@ -28,19 +28,21 @@ class MyDataCollatorWithPadding(DataCollatorWithPadding):
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         max_len = 0
         for i in features:
-            if len(i['input_ids']) > max_len : max_len = len(i['input_ids'])
+            if len(i["input_ids"]) > max_len:
+                max_len = len(i["input_ids"])
 
         batch = defaultdict(list)
+        print(features)
         for item in features:
             for k in item:
-                if('label' not in k):
+                if "label" not in k:
                     padding_len = max_len - item[k].size(0)
-                    if(k == 'input_ids'):
-                        item[k] = torch.cat((item[k], torch.tensor([self.tokenizer.pad_token_id]*padding_len)), dim=0)
+                    if k == "input_ids":
+                        item[k] = torch.cat((item[k], torch.tensor([self.tokenizer.pad_token_id] * padding_len)), dim=0)
                     else:
-                        item[k] = torch.cat((item[k], torch.tensor([0]*padding_len)), dim=0)
+                        item[k] = torch.cat((item[k], torch.tensor([0] * padding_len)), dim=0)
                 batch[k].append(item[k])
-                
+
         for k in batch:
             batch[k] = torch.stack(batch[k], dim=0)
             batch[k] = batch[k].to(torch.long)
@@ -70,50 +72,26 @@ def train(conf):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     model_name = conf.model.model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    # use_fast=False로 수정할 경우 -> RuntimeError 발생
-    # RuntimeError: CUDA error: CUBLAS_STATUS_NOT_INITIALIZED when calling `cublasCreate(handle)`
-
-    if conf.data.tem == 1 or conf.data.tem == 2: #typed entity token에 쓰이는 스페셜 토큰 추가
-        special_tokens_dict = {'additional_special_tokens': ['<e1>', '</e1>', '<e2>', '</e2>', '<e3>', '</e3>', '<e4>', '</e4>']}
-        tokenizer.add_special_tokens(special_tokens_dict)
-        
+    tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", bos_token="<s>", eos_token="</s>", unk_token="<unk>", pad_token="<pad>", mask_token="<mask>")
     data_collator = MyDataCollatorWithPadding(tokenizer=tokenizer)
 
-    # 이후 토큰을 추가하는 경우 이 부분에 추가해주세요.
-    # tokenizer.add_special_tokens()
-    # tokenizer.add_tokens()
-
-    # mlflow 실험명으로 들어갈 이름을 설정합니다.
-    experiment_name = model_name +'_'+ conf.model.model_class_name + "_bs" + str(conf.train.batch_size) + "_ep" + str(conf.train.max_epoch) + "_lr" + str(conf.train.learning_rate)
-    # start_mlflow(experiment_name)  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
+    experiment_name = model_name + "_" + conf.model.model_class_name + "_bs" + str(conf.train.batch_size) + "_ep" + str(conf.train.max_epoch) + "_lr" + str(conf.train.learning_rate)
+    start_mlflow(experiment_name)  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
 
     # load dataset
-    RE_train_dataset = dataloader.load_dataset(tokenizer, conf.path.train_path,conf)
-    RE_dev_dataset = dataloader.load_dataset(tokenizer, conf.path.dev_path,conf)
-    RE_test_dataset = dataloader.load_dataset(tokenizer, conf.path.test_path,conf)
+    RE_train_dataset = dataloader.load_dataset(tokenizer, conf.path.train_path, conf)
+    RE_dev_dataset = dataloader.load_dataset(tokenizer, conf.path.dev_path, conf)
+    RE_test_dataset = dataloader.load_dataset(tokenizer, conf.path.test_path, conf)
 
-    # 모델을 로드합니다. 커스텀 모델을 사용하시는 경우 이 부분을 바꿔주세요.
-    if conf.model.model_class_name == 'Model':
-        model = model_arch.Model(conf, len(tokenizer))
-    elif conf.model.model_class_name == 'CustomRBERT':    #RBERT
-        model_config = AutoConfig.from_pretrained(model_name)
-        model = model_arch.CustomRBERT(model_config, conf, len(tokenizer))
-    elif conf.model.model_class_name == 'LSTMModel':    #LSTM
-        model = model_arch.LSTMModel(conf, len(tokenizer))
-    elif conf.model.model_class_name == 'AuxiliaryModel':    
-        model = model_arch.AuxiliaryModel(conf, len(tokenizer))
-    elif conf.model.model_class_name == 'AuxiliaryModel2':    
-        model = model_arch.AuxiliaryModel2(conf, len(tokenizer))
-    elif conf.model.model_class_name == 'AuxiliaryModelWithEntity':    
-        model = model_arch.AuxiliaryModelWithEntity(conf, len(tokenizer))
-    elif conf.model.model_class_name == 'TAPT' :
-        model = AutoModelForSequenceClassification.from_pretrained(
-        conf.path.load_pretrained_model_path, num_labels=30
-        )
-    ### Refactoring 필요!!
-
+    model = model_arch.PTuneForGPT2()
     model.parameters
+
+    for layer_name, param in model.named_parameters():
+        if "score.weight" in layer_name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
     model.to(device)
     # 다른 옵티마이저를 사용하고 싶으신 경우 이 부분을 바꿔주세요.
     optimizer = transformers.AdamW(model.parameters(), lr=conf.train.learning_rate)
@@ -149,15 +127,9 @@ def train(conf):
         logging_dir="./logs",  # directory for storing logs 로그 경로 설정인데 폴더가 안생김?
         logging_steps=conf.train.logging_steps,  # 해당 스탭마다 loss, lr, epoch가 cmd에 출력됩니다.
         evaluation_strategy="steps",
-        # `no`: No evaluation during training.
-        # `steps`: Evaluate every `eval_steps`.
-        # `epoch`: Evaluate every end of epoch.
         eval_steps=conf.train.eval_steps,  # 해당 스탭마다 valid set을 이용해서 모델을 평가합니다. 이 값을 기준으로 save_steps 모델이 저장됩니다.
         load_best_model_at_end=True,
-        # huggingface hub에 모델을 저장합니다.
-        # push_to_hub=True를 설정하는 경우 trainer.save_model() 단계에서 에러가 발생합니다. 둘 중에 하나만 사용해주세요!!!
-        # push_to_hub=True,  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
-        metric_for_best_model=conf.utils.monitor,  # 평가 기준으로 할 loss값을 설정합니다.
+        metric_for_best_model=conf.utils.monitor,
     )
     trainer = Trainer(
         model=model,
@@ -171,12 +143,9 @@ def train(conf):
     )
 
     trainer.train()
-    # train 과정에서 가장 평가 점수가 좋은 모델을 저장합니다.
-    # best_model 폴더에 저장됩니다.
     trainer.save_model(f"./best_model/{re.sub('/', '-', model_name)}/{train_start_time}")
-    
-    # mlflow.end_run()  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
-    # trainer.push_to_hub()  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
+
+    mlflow.end_run()  # 간단한 실행을 하는 경우 주석처리를 하시면 더 빠르게 실행됩니다.
     model.eval()
     metrics = trainer.evaluate(RE_test_dataset)
     print("Training is complete!")
@@ -184,7 +153,7 @@ def train(conf):
     print("eval loss: ", metrics["eval_loss"])
     print("eval auprc: ", metrics["eval_auprc"])
     print("eval micro f1 score: ", metrics["eval_micro f1 score"])
-    
+
     # best_model 저장할 때 사용했던 config파일도 같이 저장합니다.
     if not os.path.exists(f"./best_model/{re.sub('/', '-', model_name)}/{train_start_time}"):
         os.makedirs(f"./best_model/{re.sub('/', '-', model_name)}/{train_start_time}")
