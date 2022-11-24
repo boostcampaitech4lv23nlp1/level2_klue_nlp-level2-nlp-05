@@ -32,7 +32,6 @@ class MyDataCollatorWithPadding(DataCollatorWithPadding):
                 max_len = len(i["input_ids"])
 
         batch = defaultdict(list)
-        print(features)
         for item in features:
             for k in item:
                 if "label" not in k:

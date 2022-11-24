@@ -22,7 +22,7 @@ data:
 
 train:
   max_epoch: 10
-  batch_size: 32
+  batch_size: 4
   learning_rate: 3e-5
   loss: focal # loss.py 맨 아래 config 되어 있는 값을 받아서 loss 함수를 가져옵니다.
   save_steps: 1000

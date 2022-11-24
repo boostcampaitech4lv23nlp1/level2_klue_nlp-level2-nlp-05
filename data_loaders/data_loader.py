@@ -14,7 +14,7 @@ class RE_Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         item = defaultdict()
-        item["input_ids"] = self.pair_dataset
+        item = {"input_ids": torch.tensor(v) for v in self.pair_dataset[idx]}
         if self.labels:
             item["labels"] = torch.tensor(self.labels[idx])
         return item
