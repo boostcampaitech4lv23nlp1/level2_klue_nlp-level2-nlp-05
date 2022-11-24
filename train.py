@@ -71,7 +71,8 @@ def train(conf):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     model_name = conf.model.model_name
-    tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", bos_token="<s>", eos_token="</s>", unk_token="<unk>", pad_token="<pad>", mask_token="<mask>")
+    tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", bos_token="<s>", eos_token="</s>", unk_token="<unk>", mask_token="<mask>")
+
     data_collator = MyDataCollatorWithPadding(tokenizer=tokenizer)
 
     experiment_name = model_name + "_" + conf.model.model_class_name + "_bs" + str(conf.train.batch_size) + "_ep" + str(conf.train.max_epoch) + "_lr" + str(conf.train.learning_rate)
@@ -136,7 +137,7 @@ def train(conf):
         train_dataset=RE_train_dataset,  # training dataset
         eval_dataset=RE_dev_dataset,  # evaluation dataset
         compute_metrics=utils.compute_metrics,  # utils에 있는 평가 매트릭을 가져옵니다.
-        data_collator=data_collator,
+        # data_collator=data_collator,
         optimizers=(optimizer, scheduler),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=conf.utils.patience)],
     )

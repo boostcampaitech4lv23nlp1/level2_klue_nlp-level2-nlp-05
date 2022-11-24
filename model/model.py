@@ -475,7 +475,8 @@ class PTuneForGPT2(torch.nn.Module):
         self.loss_fct = loss_module.loss_config["focal"]
         self.num_labels = 30
         self.model = GPT2ForSequenceClassification.from_pretrained("skt/kogpt2-base-v2", num_labels=30).to("cuda:0")
-        self.tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", bos_token="<s>", eos_token="</s>", unk_token="<unk>", pad_token="<pad>", mask_token="<mask>")
+        self.tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", bos_token="<s>", eos_token="</s>", unk_token="<unk>")
+        self.model.config.pad_token_id = None
 
         # GPT2 모델에서는 마지막 출력층만 학습을 하고 본체는 학습을 하지 않습니다.
         for layer_name, param in self.model.named_parameters():
@@ -524,8 +525,15 @@ class PTuneForGPT2(torch.nn.Module):
             return loss, logits
         return logits
 
+    def process(self, input_ids, labels=None):
+        inputs_embeds = self.embed_input(input_ids)
+        output = self.model(inputs_embeds=inputs_embeds)
+        logits = output.logits
+
+        return logits
+
     def rdrop(self, logits, input_ids, labels, alpha=0.1):
-        logits2 = self.forward(input_ids, labels)
+        logits2 = self.process(input_ids, labels)
         # cross entropy loss for classifier
         logits = logits.view(-1, self.num_labels)
         logits2 = logits.view(-1, self.num_labels)
