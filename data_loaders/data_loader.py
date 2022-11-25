@@ -64,6 +64,6 @@ def ptuning_tokenized_dataset(dataset, tokenizer):
         )
 
         # input_ids만 전달
-        output = tokenizer(prompt, padding=False, truncation=True, max_length=256, add_special_tokens=True, return_tensors="pt").input_ids
+        output = tokenizer(prompt, padding=True, truncation=True, max_length=256, add_special_tokens=True, return_tensors="pt").input_ids
         data.append(output)
     return data

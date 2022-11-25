@@ -137,7 +137,7 @@ def train(conf):
         train_dataset=RE_train_dataset,  # training dataset
         eval_dataset=RE_dev_dataset,  # evaluation dataset
         compute_metrics=utils.compute_metrics,  # utils에 있는 평가 매트릭을 가져옵니다.
-        # data_collator=data_collator,
+        data_collator=data_collator,
         optimizers=(optimizer, scheduler),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=conf.utils.patience)],
     )
