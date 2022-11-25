@@ -3,6 +3,7 @@ import random
 
 import inference
 import train
+import kfold_train
 import tapt_pretrain
 
 from omegaconf import OmegaConf
@@ -33,7 +34,10 @@ if __name__ == "__main__":
 
     print("실행 중인 config file: ", args.config)
     if args.mode == "train" or args.mode == "t":
-        train.train(conf)
+        if conf.train.kfold > 1 :
+            kfold_train.kfold_train(conf)
+        else:
+            train.train(conf)
 
     elif args.mode == "inference" or args.mode == "i":
         if conf.path.load_model_path is None:

@@ -146,10 +146,15 @@ def load_dataset(tokenizer, data_path, conf):
     RE_dataset = RE_Dataset(tokenized_test, label)
     return RE_dataset
 
-
 def load_predict_dataset(tokenizer, predict_path, conf):
     predict_dataset = pd.read_csv(predict_path, index_col=0)
     predict_label = None
     tokenized_predict = tokenized_dataset(predict_dataset, tokenizer, conf)
     RE_predict_dataset = RE_Dataset(tokenized_predict, predict_label)
     return RE_predict_dataset
+
+def load_kfold_dataset(tokenizer, dataset, conf):
+    label = label_to_num(dataset["label"].values)
+    tokenized_test = tokenized_dataset(dataset, tokenizer, conf)
+    RE_dataset = RE_Dataset(tokenized_test, label)
+    return RE_dataset
