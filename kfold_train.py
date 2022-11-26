@@ -200,6 +200,7 @@ def train(conf, kfold_train_dataset=None, kfold_dev_dataset=None,k=None):
             eval loss: {metrics["eval_loss"]}
             eval auprc: {metrics["eval_auprc"]}
             eval micro f1 score: {metrics["eval_micro f1 score"]}
+
             '''
         f.write(s)
         f.close()
@@ -211,28 +212,31 @@ def train(conf, kfold_train_dataset=None, kfold_dev_dataset=None,k=None):
         OmegaConf.save(config=conf, f=fp.name)
 
 def kfold_train(conf):
-    skf = StratifiedKFold(n_splits=conf.train.kfold) #conf.train.kfold 만큼 kfold 진행
+    skf = StratifiedKFold(n_splits=conf.train.kfold, shuffle=True, random_state=conf.train.kfold_seed) #conf.train.kfold 만큼 kfold 진행
     kfold_data = pd.read_csv(conf.path.kfold_data_path) #전체 데이터(train + dev)
     #kfold 개수대로 train/dev index가 저장된 리스트
     all_splits = [k for k in skf.split(kfold_data,kfold_data['label'])]
-
+    print(all_splits)
     now = datetime.now()
     starttime = now.strftime("%d-%H-%M")
 
-    for k in range(conf.train.kfold):
+    for k, (train_indexes, val_indexes) in enumerate(skf.split(kfold_data,kfold_data['label'])):
+        print("train, val 길이 :",len(train_indexes), len(val_indexes))
         #k번째 데이터셋 만들기
-        train_indexes, val_indexes = all_splits[k]
         train_indexes, val_indexes = train_indexes.tolist(), val_indexes.tolist()
-        print(train_indexes[0])
+        print("train, val 시작 index : ",train_indexes[0],val_indexes[0])
 
         # fold한 index에 따라 데이터셋 분할
         now_train_df = [kfold_data.iloc[x] for x in train_indexes] 
         now_val_df = [kfold_data.iloc[x] for x in val_indexes]
+        print("train, val dataframe 길이 : ",len(now_train_df),len(now_val_df))
         now_train_df = pd.DataFrame(now_train_df,columns=kfold_data.columns)
         now_val_df = pd.DataFrame(now_val_df,columns=kfold_data.columns)
 
         #데이터셋 저장
-        now_train_df.to_csv(f"./dataset/kfold/kfold_train_{starttime}_{k}.csv",index=False)
-        now_train_df.to_csv(f"./dataset/kfold/kfold_dev_{starttime}_{k}.csv",index=False)
+        if not os.path.exists(f"./dataset/kfold/{starttime}"):
+            os.makedirs(f"./dataset/kfold/{starttime}")
+        now_train_df.to_csv(f"./dataset/kfold/{starttime}/{k}_kfold_train.csv",index=False)
+        now_val_df.to_csv(f"./dataset/kfold/{starttime}/{k}_kfold_dev.csv",index=False)
 
-        train(conf,now_train_df,now_train_df,k)
+        train(conf,now_train_df,now_val_df,k)
