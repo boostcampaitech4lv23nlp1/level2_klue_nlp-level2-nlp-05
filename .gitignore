@@ -123,3 +123,4 @@ best_model/*
 prediction/*
 step_saved_model/*
 
+dataset/kfold/*
