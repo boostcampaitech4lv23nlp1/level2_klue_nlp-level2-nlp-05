@@ -14,7 +14,7 @@ class RE_Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         item = defaultdict()
-        item = {"input_ids": torch.tensor(v) for v in self.pair_dataset[idx]}
+        item["input_ids"] = torch.tensor(self.pair_dataset[idx])
         if self.labels:
             item["labels"] = torch.tensor(self.labels[idx])
         return item
@@ -42,6 +42,7 @@ def load_predict_dataset(tokenizer, predict_path, conf):
 def ptuning_tokenized_dataset(dataset, tokenizer):
     template = [3, 2, 3, 2, 3, 4]
     data = []
+    tokenizer.add_special_tokens({"pad_token": "</s>"})
     for _, item in tqdm(dataset.iterrows(), desc="tokenizing", total=len(dataset)):
 
         subj = eval(item["subject_entity"])["word"]
@@ -64,6 +65,6 @@ def ptuning_tokenized_dataset(dataset, tokenizer):
         )
 
         # input_ids만 전달
-        output = tokenizer(prompt, padding=True, truncation=True, max_length=256, add_special_tokens=True, return_tensors="pt").input_ids
+        output = tokenizer(prompt, padding="max_length", truncation=True, max_length=256, add_special_tokens=True, return_tensors="pt").input_ids
         data.append(output)
     return data

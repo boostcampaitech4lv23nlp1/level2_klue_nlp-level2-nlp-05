@@ -25,13 +25,14 @@ class PromptEncoder(nn.Module):
         return output_embeds
 
 
-class PTuneForGPT2(torch.nn.Module):
+class PTuneForGPT2(nn.Module):
     def __init__(self):
         super().__init__()
         self.loss_fct = loss_module.loss_config["focal"]
         self.num_labels = 30
         self.tokenizer = PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2", pad_token="</s>", bos_token="<s>", eos_token="</s>", unk_token="<unk>")
-        self.model = GPT2ForSequenceClassification.from_pretrained("skt/kogpt2-base-v2", num_labels=30, pad_token_id=self.tokenizer.eos_token_id).to("cuda:0")
+        self.model = GPT2ForSequenceClassification.from_pretrained("skt/kogpt2-base-v2", num_labels=30).to("cuda:0")
+        self.model.config.pad_token_id = self.tokenizer.eos_token_id
         # self.model.config.pad_token_id = None
 
         # GPT2 모델에서는 마지막 출력층만 학습을 하고 본체는 학습을 하지 않습니다.
@@ -51,9 +52,18 @@ class PTuneForGPT2(torch.nn.Module):
         self.prompt_encoder = PromptEncoder(self.prompt_token_len, self.embedding_dim, 0.2).to("cuda:0")
 
     def embed_input(self, input_ids):
+        input_ids = input_ids.squeeze(1)
         bs = input_ids.shape[0]  # batch size
         embeds = self.embeddings(input_ids)
-
+        # print("===================================")
+        # print(input_ids[1, :])
+        # print("===================================")
+        # print(input_ids[1, :].size())
+        # print("===================================")
+        # print(torch.nonzero(input_ids == self.prompt_token_id))
+        # print("===================================")
+        # print(torch.nonzero(input_ids == self.prompt_token_id).size())
+        # print("===================================")
         # prompt token의 인덱스 위치 ex) [16, 17]
         prompt_token_position = torch.nonzero(input_ids == self.prompt_token_id).reshape((bs, self.prompt_token_len, 2))[:, :, 1]
         # prompt의 임베딩 ex) prompt을 2개 사용하는 경우 [2, 768]
