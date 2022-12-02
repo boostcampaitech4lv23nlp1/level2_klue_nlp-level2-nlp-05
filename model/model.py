@@ -480,7 +480,9 @@ class AuxiliaryRECENTWithRBERT(nn.Module):
         #entity type 토큰 FC layer
         #self.entity_type_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
         self.weight = [0.9, 0.1]
-        
+        self.binary_classifier = FCLayer(self.hidden_dim * 5, 2, 0.1)
+        self.label_classifier_0 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+
         self.label_classifiers = nn.ModuleList()
         for i in range(12):
             self.label_classifiers.append(FCLayer(self.hidden_dim * 5, self.num_labels, 0.1))
@@ -561,19 +563,19 @@ class AuxiliaryRECENTWithRBERT(nn.Module):
             loss_fct = self.loss_fct
             binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
             binary_loss = loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
-            loss = self.weight[0]*binary_loss + self.weight[1]+loss
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            loss = self.weight[0]*binary_loss + self.weight[1]*loss
 
             if(self.conf.train.rdrop):
-                loss = self.rdrop(logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+                loss = self.rdrop(binary_logits, logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
             return loss, logits
         return logits
 
-    def rdrop(self, binary_logits, logits, labels, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask, alpha=0.1):
-        binary_logits2, logits2 = self.process(input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+    def rdrop(self, binary_logits, logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask, alpha=0.1):
+        binary_logits2, logits2 = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
         binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
         logits = logits.view(-1, self.num_labels)
         logits2 = logits.view(-1, self.num_labels)
-        
 
         ce_loss = 0.5 * (self.loss_fct(logits, labels.view(-1)) + self.loss_fct(logits2, labels.view(-1)))
         kl_loss = loss_module.compute_kl_loss(logits, logits2)
@@ -585,7 +587,6 @@ class AuxiliaryRECENTWithRBERT(nn.Module):
         # carefully choose hyper-parameters
         binary_loss = binary_ce_loss + alpha * binary_kl_loss
         return self.weight[0]*binary_loss + self.weight[1]*loss
-
 
 
 
