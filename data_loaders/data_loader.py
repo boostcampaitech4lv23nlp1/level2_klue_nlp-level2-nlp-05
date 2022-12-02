@@ -247,6 +247,104 @@ def tokenized_dataset(dataset, tokenizer, conf):
                 output = tokenizer(sent, padding=True, truncation=True, max_length=256, add_special_tokens=True, return_token_type_ids=False)
                 output.attention_mask[0] = pairs.index((se, oe))
             data.append(output)  # [{input_ids, attention_mask, token_type_ids}]
+    
+    elif conf.data.tem == 2 and 'RECENT' in conf.model.model_class_name:  # typed entity marker + emask
+        """
+        1. 스페셜 토큰을 사용하여 typed entity marker 표시
+        2. 스페셜 토큰의 위치를 저장
+        3. 스페셜 토큰을 특수기호로 치환
+        4. 토크나이징
+        5. 토큰화한 길이랑 같은 길이면서, (2번에서 기록한)스페셜 토큰의 위치는 1, 나머지는 0인 emask 생성
+        """
+        sentence_list = []
+        head_ids = []
+        # typed_entity_marker 사용시 스페셜토큰 추가
+        for _, item in tqdm(dataset.iterrows(), desc="add_entity_token", total=len(dataset)):
+            sentence_list.append(add_entity_token(item, conf.data.tem))
+            sent = add_entity_token(item, 1)
+            se = literal_eval(item["subject_entity"])["type"]
+            oe = literal_eval(item["object_entity"])["type"]
+            if (se, oe) == ("LOC", "DAT"):
+                head_ids.append(2)
+            else:
+                pairs = [
+                    ("ORG", "PER"),
+                    ("ORG", "ORG"),
+                    ("ORG", "DAT"),
+                    ("ORG", "LOC"),
+                    ("ORG", "POH"),
+                    ("ORG", "NOH"),
+                    ("PER", "PER"),
+                    ("PER", "ORG"),
+                    ("PER", "DAT"),
+                    ("PER", "LOC"),
+                    ("PER", "POH"),
+                    ("PER", "NOH"),
+                ]
+                head_ids.append(pairs.index((se, oe)))
+        i = 0
+        for sent in tqdm(sentence_list, desc="tokenizing", total=len(sentence_list)):
+            # 문장을 tokenize 한 후 tokenized_sent 변수에 할당
+            tokenized_sent = tokenizer.tokenize(sent)
+            # 스페셜토큰 위치 리스트, 스페셜토큰 리스트, 대체토큰 리스트
+            e_p_list = []
+            s_t_list = ["<e1>", "</e1>", "<e2>", "</e2>", "<e3>", "</e3>", "<e4>", "</e4>"]
+            rp_t_list = ["@", "@", "#", "#", "*", "*", "%", "%"]
+
+            # 토큰화된 문장에서의 몇번째 위치인지를 확인
+            for s_t in s_t_list:
+                e_p_list.append(tokenized_sent.index(s_t))
+
+            # 대체토큰으로 교환
+            for s_t, rp_t in zip(s_t_list, rp_t_list):
+                sent = re.sub(s_t, rp_t, sent)
+
+            # Add 1 because of the [CLS] token
+            for idx in range(len(s_t_list)):
+                e_p_list[idx] += 1
+
+            # 문장을 tokenizer setting 에 맞게 tokenize 진행
+            tokenized_sentences = tokenizer(
+                sent,
+                return_tensors="pt",
+                padding=True,  # collate 사용불가로 인해 padding 사이즈 맞추기
+                truncation=True,
+                max_length=256,
+                add_special_tokens=True,
+                return_token_type_ids=False if "roberta" in conf.model.model_name else True,  # roberta는 사용안함, inference시 꼭 False로!
+            )
+            # 차원 낮추기
+            tokenized_sentences["input_ids"] = tokenized_sentences["input_ids"].squeeze()
+            tokenized_sentences["attention_mask"] = tokenized_sentences["attention_mask"].squeeze()
+            tokenized_sentences["attention_mask"][0] = head_ids[i]
+
+            #print(tokenized_sentences["attention_mask"])
+            # token type ids 사용시
+            if "roberta" not in conf.model.model_name:
+                tokenized_sentences["token_type_ids"] = tokenized_sentences["token_type_ids"].squeeze()
+
+            # special_token 의 위치를 저장하기 위한 배열 생성
+            e1_mask = [0] * tokenized_sentences["attention_mask"].shape[0]
+            e2_mask = [0] * tokenized_sentences["attention_mask"].shape[0]
+            e3_mask = [0] * tokenized_sentences["attention_mask"].shape[0]
+            e4_mask = [0] * tokenized_sentences["attention_mask"].shape[0]
+
+            e1_mask[e_p_list[0]] = 1
+            e1_mask[e_p_list[1]] = 1
+            e2_mask[e_p_list[2]] = 1
+            e2_mask[e_p_list[3]] = 1
+            e3_mask[e_p_list[4]] = 1
+            e3_mask[e_p_list[5]] = 1
+            e4_mask[e_p_list[6]] = 1
+            e4_mask[e_p_list[7]] = 1
+
+            tokenized_sentences["e1_mask"] = torch.tensor(e1_mask, dtype=torch.long)
+            tokenized_sentences["e2_mask"] = torch.tensor(e2_mask, dtype=torch.long)
+            tokenized_sentences["e3_mask"] = torch.tensor(e3_mask, dtype=torch.long)
+            tokenized_sentences["e4_mask"] = torch.tensor(e4_mask, dtype=torch.long)
+
+            data.append(tokenized_sentences)  # [{input_ids, attention_mask, token_type_ids, e1mask, e2mask, e3mask, e4mask}]
+            i = i+1
 
     elif conf.data.tem == 2:  # typed entity marker + emask
         """

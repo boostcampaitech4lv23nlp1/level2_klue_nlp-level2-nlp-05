@@ -20,13 +20,13 @@ from pathlib import Path
 
 
 def hyperparameter_tune(trainer: Trainer, training_args: TrainingArguments, experiment_name) -> BestRun:
-    resume = False
+    resume = True
     def ray_hp_space(trial):
         return {
             #"weight_decay": tune.uniform(0.0, 0.3),
             "num_train_epochs": tune.randint(5,10),
             "learning_rate": tune.loguniform(1e-5, 2e-5),
-            "warmup_ratio": tune.uniform(0, 0.5),
+            "warmup_ratio": tune.uniform(0, 0.3),
             #"attention_probs_dropout_prob": tune.uniform(0, 0.2),
             #"hidden_dropout_prob": tune.uniform(0, 0.2),
             #"per_device_train_batch_size": tune.choice([16]),
@@ -81,7 +81,7 @@ def hyperparameter_tune(trainer: Trainer, training_args: TrainingArguments, expe
         #keep_checkpoints_num=1,
         # checkpoint_score_attr="training_iteration",
         checkpoint_score_attr="epoch",
-        stop=TrialPlateauStopper("eval_micro f1 score"),
+        stop=TrialPlateauStopper("eval_micro f1 score", 0.005),
         progress_reporter=reporter,
         local_dir='./raytune_log',
         name=experiment_name,

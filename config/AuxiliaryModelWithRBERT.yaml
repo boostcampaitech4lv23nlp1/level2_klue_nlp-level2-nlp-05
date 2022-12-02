@@ -4,7 +4,7 @@ path:
   test_path: ./dataset/test/test.csv
   predict_path: ./dataset/predict/predict.csv
   # inference를 하는 경우 로드할 모델의 경로를 입력해주세요.
-  load_model_path: /opt/ml/level2_klue_nlp-level2-nlp-05/best_model/klue-roberta-large/23-05-33/pytorch_model.bin
+  load_model_path: /opt/ml/level2_klue_nlp-level2-nlp-05/best_model/klue-roberta-large/22-19-49/pytorch_model.bin
 model:
   model_class_name: AuxiliaryModelWithRBERT #model.py에서 사용할 모델 이름
   # Model : Model
@@ -30,7 +30,7 @@ train:
   eval_steps: 1000
   logging_steps: 500
   dropout: 0.2
-  rdrop: True # rdrop 사용시 batch_size / 2
+  rdrop: False # rdrop 사용시 batch_size / 2
   
 utils:
   seed: 42

@@ -91,7 +91,7 @@ def train(args, conf):
 
     new_token_count = 0
     # add special token in rbert model
-    if conf.data.dataloader == "typed_entity_marker_emask":
+    if conf.data.tem == 2:  # typed entity token에 쓰이는 스페셜 토큰
         special_tokens_dict = {"additional_special_tokens": ["<e1>", "</e1>", "<e2>", "</e2>", "<e3>", "</e3>", "<e4>", "</e4>"]}
         tokenizer.add_special_tokens(special_tokens_dict)
 
@@ -111,7 +111,7 @@ def train(args, conf):
 
     # 모델을 로드합니다. 커스텀 모델을 사용하시는 경우 이 부분을 바꿔주세요.
     if conf.train.continue_train:
-        model_class = locate(f"model.{conf.model.model_type}.{conf.model.model_class_name}")
+        model_class = locate(f"model.model.{conf.model.model_class_name}")
         model = model_class(conf, len(tokenizer))
         checkpoint = torch.load(conf.path.load_model_path)
         model.load_state_dict(checkpoint)
@@ -119,7 +119,7 @@ def train(args, conf):
     elif conf.model.use_tapt_model:
         model = AutoModelForSequenceClassification.from_pretrained(conf.path.load_pretrained_model_path, num_labels=30)
     else:
-        model_class = locate(f"model.{conf.model.model_type}.{conf.model.model_class_name}")
+        model_class = locate(f"model.model.{conf.model.model_class_name}")
         model = model_class(conf, len(tokenizer))
 
 
@@ -129,7 +129,7 @@ def train(args, conf):
     model.to(device)
 
     def model_init(trial):
-        model_class = locate(f'model.{conf.model.model_type}.{conf.model.model_class_name}')
+        model_class = locate(f'model.model.{conf.model.model_class_name}')
         model = model_class(conf, len(tokenizer))
         return model
 
@@ -187,24 +187,22 @@ def train(args, conf):
 
 
     print("Before:", ray_trainer.args)
-    # 참고 예정
     # best_run으로 받아온 best hyperparameter로 재학습
     # https://github.com/huggingface/setfit/blob/ebee18ceaecb4414482e0a6b92c97f3f99309d56/scripts/transformers/run_fewshot.py
-    for key, value in best_run.hyperparameters.items():
-        setattr(ray_trainer.args, key, value)
     
     trainer = Trainer(
         model=model,  # the instantiated 🤗 Transformers model to be trained
         args=training_args,  # training arguments, defined above
         train_dataset=RE_train_dataset,  # training dataset
-        eval_dataset=RE_train_dataset,  # evaluation dataset
+        eval_dataset=RE_dev_dataset,  # evaluation dataset
         compute_metrics=utils.compute_metrics,  # define metrics function
         data_collator=data_collator,
-        # optimizers=optimizers,
-        # model_init=model_init,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
     )
 
+    for key, value in best_run.hyperparameters.items():
+        setattr(trainer.args, key, value)
+    
     print("After:", trainer.args)
 
     # train model

@@ -186,7 +186,7 @@ class AuxiliaryModel(CustomModel):
         self.binary_classifier = FCLayer(self.hidden_dim, 2)
         self.label_classifier_0 = FCLayer(self.hidden_dim, self.num_labels, False)
         self.label_classifier_1 = FCLayer(self.hidden_dim, self.num_labels, False)
-        self.weight = [0.5, 0.5]
+        self.weight = [conf.model.weight1, conf.model.weight2]
     
     def process(self, input_ids=None, attention_mask=None, token_type_ids=None):
         # Extract outputs from the body
@@ -349,7 +349,10 @@ class AuxiliaryModelWithRBERT(AuxiliaryModel):
         self.binary_classifier = FCLayer(self.hidden_dim * 5, 2, 0.1)
         self.label_classifier_0 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
         self.label_classifier_1 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
-        self.weight = [0.5, 0.5]
+        self.weight = [conf.model.weight1, conf.model.weight2]
+        print('-------------------------------------------------------')
+        print(self.weight)
+        print('-------------------------------------------------------')
     
     @staticmethod
     def entity_average(hidden_output, e_mask):  #엔티티 안의 토큰들의 임베딩 평균
@@ -423,8 +426,9 @@ class AuxiliaryModelWithRBERT(AuxiliaryModel):
             binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
             binary_loss = loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
             loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            #print(binary_loss, loss)
             loss = self.weight[0]*binary_loss + self.weight[1]+loss
-
+            
             if(self.conf.train.rdrop):
                 loss = self.rdrop(binary_logits, logits, labels, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
             return loss, logits
@@ -448,6 +452,395 @@ class AuxiliaryModelWithRBERT(AuxiliaryModel):
         # carefully choose hyper-parameters
         binary_loss = binary_ce_loss + alpha * binary_kl_loss
         return self.weight[0]*binary_loss + self.weight[1]*loss
+
+
+
+class AuxiliaryRECENTWithRBERT(nn.Module):
+    '''
+        RBert에서 사용하는 entity token의 average값을 cls와 concat해서 binary_classification, label_classification에 사용한다.
+    '''
+    def __init__(self, conf, new_vocab_size):
+        super().__init__()
+        self.num_labels = 30
+        self.conf = conf
+        self.model_name = conf.model.model_name
+        # Load Model with given checkpoint and extract its body
+
+        self.model = AutoModel.from_pretrained(self.model_name)
+        print(self.model.config)
+        print(self.model.state_dict())
+        self.model.resize_token_embeddings(new_vocab_size)
+        self.hidden_dim = self.model.config.hidden_size
+        self.loss_fct = loss_module.loss_config[conf.train.loss]
+
+        #cls 토큰 FC layer
+        self.cls_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity 토큰 FC layer
+        self.entity_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity type 토큰 FC layer
+        #self.entity_type_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        self.weight = [0.9, 0.1]
+        
+        self.label_classifiers = nn.ModuleList()
+        for i in range(12):
+            self.label_classifiers.append(FCLayer(self.hidden_dim * 5, self.num_labels, 0.1))
+        
+        
+    @staticmethod
+    def entity_average(hidden_output, e_mask):  #엔티티 안의 토큰들의 임베딩 평균
+        """
+        Average the entity hidden state vectors (H_i ~ H_j)
+        :param hidden_output: [batch_size, j-i+1, dim]
+        :param e_mask: [batch_size, max_seq_len]
+                e.g. e_mask[0] == [0, 0, 0, 1, 1, 1, 0, 0, ... 0]
+        :return: [batch_size, dim]
+        """
+        e_mask_unsqueeze = e_mask.unsqueeze(1)  # [b, 1, j-i+1]
+        length_tensor = (e_mask != 0).sum(dim=1).unsqueeze(1)  # [batch_size, 1]
+
+        # [b, 1, j-i+1] * [b, j-i+1, dim] = [b, 1, dim] -> [b, dim]
+        sum_vector = torch.bmm(e_mask_unsqueeze.float(), hidden_output).squeeze(1)
+        avg_vector = sum_vector.float() / length_tensor.float()  # broadcasting
+        return avg_vector
+
+    def get_classifier_input(self, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        outputs = self.model(
+            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+        )  # sequence_output, pooled_output, (hidden_states), (attentions)
+        sequence_output = outputs[0]  # last hidden state
+        pooled_output = outputs[1]  # [CLS]
+
+        # Average
+        e1_h = self.entity_average(sequence_output, e1_mask)
+        e2_h = self.entity_average(sequence_output, e2_mask)
+        e3_h = self.entity_average(sequence_output, e3_mask)
+        e4_h = self.entity_average(sequence_output, e4_mask)
+
+        # Concat -> fc_layer
+        pooled_output = self.cls_fc_layer(pooled_output)
+        e1_h = self.entity_fc_layer(e1_h)
+        e2_h = self.entity_fc_layer(e2_h)
+
+        #concat 후 분류
+        concat_h = torch.cat([pooled_output, e1_h, e2_h, e3_h, e4_h], dim=-1)  # (batch_size, hidden_dim * 5)
+        return concat_h  
+
+    def process(self, head_ids, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        # Extract outputs from the body
+        x = self.get_classifier_input(input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask) 
+        # get classifier input for RBERT
+
+        logits = []
+        binary_logits = self.binary_classifier(x)
+        binary_labels = torch.argmax(binary_logits,1)
+        for i,l in enumerate(binary_labels.tolist()):
+            head_id = head_ids.tolist()[i]
+            if(l == 0):
+                logits.append(self.label_classifier_0(x[i,:]))
+            else:
+                classifier = self.label_classifiers[head_id]
+                logits.append(classifier(x[i,:]))
+            
+        logits = torch.stack(logits,0)
+        return binary_logits, logits    # (batch_size, 2), (batch_size, 30)
+
+
+    @autocast() 
+    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        
+        head_ids = attention_mask[:,0].clone().detach()
+        attention_mask[:,0] = 1
+
+        binary_logits, logits = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        
+        loss = None
+        if labels is not None:
+            loss_fct = self.loss_fct
+            binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
+            binary_loss = loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
+            loss = self.weight[0]*binary_loss + self.weight[1]+loss
+
+            if(self.conf.train.rdrop):
+                loss = self.rdrop(logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+            return loss, logits
+        return logits
+
+    def rdrop(self, binary_logits, logits, labels, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask, alpha=0.1):
+        binary_logits2, logits2 = self.process(input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
+        logits = logits.view(-1, self.num_labels)
+        logits2 = logits.view(-1, self.num_labels)
+        
+
+        ce_loss = 0.5 * (self.loss_fct(logits, labels.view(-1)) + self.loss_fct(logits2, labels.view(-1)))
+        kl_loss = loss_module.compute_kl_loss(logits, logits2)
+        # carefully choose hyper-parameters
+        loss = ce_loss + alpha * kl_loss
+
+        binary_ce_loss = 0.5 * (self.loss_fct(binary_logits, binary_labels.view(-1)) + self.loss_fct(binary_logits2, binary_labels.view(-1)))
+        binary_kl_loss = loss_module.compute_kl_loss(binary_logits, binary_logits2)
+        # carefully choose hyper-parameters
+        binary_loss = binary_ce_loss + alpha * binary_kl_loss
+        return self.weight[0]*binary_loss + self.weight[1]*loss
+
+
+
+
+class RECENTWithRBERT(nn.Module):
+    '''
+        RBert에서 사용하는 entity token의 average값을 cls와 concat해서 binary_classification, label_classification에 사용한다.
+    '''
+    def __init__(self, conf, new_vocab_size):
+        super().__init__()
+        self.num_labels = 30
+        self.conf = conf
+        self.model_name = conf.model.model_name
+        # Load Model with given checkpoint and extract its body
+
+        self.model = AutoModel.from_pretrained(self.model_name)
+        print(self.model.config)
+        print(self.model.state_dict())
+        self.model.resize_token_embeddings(new_vocab_size)
+        self.hidden_dim = self.model.config.hidden_size
+        self.loss_fct = loss_module.loss_config[conf.train.loss]
+
+        #cls 토큰 FC layer
+        self.cls_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity 토큰 FC layer
+        self.entity_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity type 토큰 FC layer
+        #self.entity_type_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        
+        self.label_classifiers = nn.ModuleList()
+        for i in range(12):
+            self.label_classifiers.append(FCLayer(self.hidden_dim * 5, self.num_labels, 0.1))
+        
+        
+    @staticmethod
+    def entity_average(hidden_output, e_mask):  #엔티티 안의 토큰들의 임베딩 평균
+        """
+        Average the entity hidden state vectors (H_i ~ H_j)
+        :param hidden_output: [batch_size, j-i+1, dim]
+        :param e_mask: [batch_size, max_seq_len]
+                e.g. e_mask[0] == [0, 0, 0, 1, 1, 1, 0, 0, ... 0]
+        :return: [batch_size, dim]
+        """
+        e_mask_unsqueeze = e_mask.unsqueeze(1)  # [b, 1, j-i+1]
+        length_tensor = (e_mask != 0).sum(dim=1).unsqueeze(1)  # [batch_size, 1]
+
+        # [b, 1, j-i+1] * [b, j-i+1, dim] = [b, 1, dim] -> [b, dim]
+        sum_vector = torch.bmm(e_mask_unsqueeze.float(), hidden_output).squeeze(1)
+        avg_vector = sum_vector.float() / length_tensor.float()  # broadcasting
+        return avg_vector
+
+    def get_classifier_input(self, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        outputs = self.model(
+            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+        )  # sequence_output, pooled_output, (hidden_states), (attentions)
+        sequence_output = outputs[0]  # last hidden state
+        pooled_output = outputs[1]  # [CLS]
+
+        # Average
+        e1_h = self.entity_average(sequence_output, e1_mask)
+        e2_h = self.entity_average(sequence_output, e2_mask)
+        e3_h = self.entity_average(sequence_output, e3_mask)
+        e4_h = self.entity_average(sequence_output, e4_mask)
+
+        # Concat -> fc_layer
+        pooled_output = self.cls_fc_layer(pooled_output)
+        e1_h = self.entity_fc_layer(e1_h)
+        e2_h = self.entity_fc_layer(e2_h)
+
+        #concat 후 분류
+        concat_h = torch.cat([pooled_output, e1_h, e2_h, e3_h, e4_h], dim=-1)  # (batch_size, hidden_dim * 5)
+        return concat_h  
+
+    def process(self, head_ids, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        # Extract outputs from the body
+        x = self.get_classifier_input(input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask) 
+        # get classifier input for RBERT
+
+        logits = []
+        #binary_logits = self.binary_classifier(x)
+        #binary_labels = torch.argmax(binary_logits,1)
+        for i,l in enumerate(head_ids.tolist()):
+            classifier = self.label_classifiers[l]
+            logits.append(classifier(x[i,:]))
+
+        logits = torch.stack(logits,0)
+        return logits    # (batch_size, 2), (batch_size, 30)
+
+
+    @autocast() 
+    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        
+        head_ids = attention_mask[:,0].clone().detach()
+        attention_mask[:,0] = 1
+
+        logits = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        loss = None
+        if labels is not None:
+            loss_fct = self.loss_fct
+            #binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
+            #binary_loss = loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            if(self.conf.train.rdrop):
+                loss = self.rdrop(logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+            return loss, logits
+        return logits
+
+
+    def rdrop(self, logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask, alpha=0.1):
+        logits2 = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        # cross entropy loss for classifier
+        logits = logits.view(-1, self.num_labels)
+        logits2 = logits.view(-1, self.num_labels)
+        
+        ce_loss = 0.5 * (self.loss_fct(logits, labels.view(-1)) + self.loss_fct(logits2, labels.view(-1)))
+        kl_loss = loss_module.compute_kl_loss(logits, logits2)
+        # carefully choose hyper-parameters
+        loss = ce_loss + alpha * kl_loss
+        return loss
+
+
+class SimpleRECENTWithRBERT(nn.Module):
+    '''
+        RBert에서 사용하는 entity token의 average값을 cls와 concat해서 binary_classification, label_classification에 사용한다.
+    '''
+    def __init__(self, conf, new_vocab_size):
+        super().__init__()
+        self.num_labels = 30
+        self.conf = conf
+        self.model_name = conf.model.model_name
+        # Load Model with given checkpoint and extract its body
+
+        self.model = AutoModel.from_pretrained(self.model_name)
+        print(self.model.config)
+        print(self.model.state_dict())
+        self.model.resize_token_embeddings(new_vocab_size)
+        self.hidden_dim = self.model.config.hidden_size
+        self.loss_fct = loss_module.loss_config[conf.train.loss]
+
+        #cls 토큰 FC layer
+        self.cls_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity 토큰 FC layer
+        self.entity_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        #entity type 토큰 FC layer
+        #self.entity_type_fc_layer = FCLayer(self.hidden_dim, self.hidden_dim, 0.1)
+        
+        self.label_classifier_0 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        self.label_classifier_1 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        self.label_classifier_2 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        self.label_classifier_3 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        self.label_classifier_4 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        self.label_classifier_5 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
+        
+    @staticmethod
+    def entity_average(hidden_output, e_mask):  #엔티티 안의 토큰들의 임베딩 평균
+        """
+        Average the entity hidden state vectors (H_i ~ H_j)
+        :param hidden_output: [batch_size, j-i+1, dim]
+        :param e_mask: [batch_size, max_seq_len]
+                e.g. e_mask[0] == [0, 0, 0, 1, 1, 1, 0, 0, ... 0]
+        :return: [batch_size, dim]
+        """
+        e_mask_unsqueeze = e_mask.unsqueeze(1)  # [b, 1, j-i+1]
+        length_tensor = (e_mask != 0).sum(dim=1).unsqueeze(1)  # [batch_size, 1]
+
+        # [b, 1, j-i+1] * [b, j-i+1, dim] = [b, 1, dim] -> [b, dim]
+        sum_vector = torch.bmm(e_mask_unsqueeze.float(), hidden_output).squeeze(1)
+        avg_vector = sum_vector.float() / length_tensor.float()  # broadcasting
+        return avg_vector
+
+    def get_classifier_input(self, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        outputs = self.model(
+            input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+        )  # sequence_output, pooled_output, (hidden_states), (attentions)
+        sequence_output = outputs[0]  # last hidden state
+        pooled_output = outputs[1]  # [CLS]
+
+        # Average
+        e1_h = self.entity_average(sequence_output, e1_mask)
+        e2_h = self.entity_average(sequence_output, e2_mask)
+        e3_h = self.entity_average(sequence_output, e3_mask)
+        e4_h = self.entity_average(sequence_output, e4_mask)
+
+        # Concat -> fc_layer
+        pooled_output = self.cls_fc_layer(pooled_output)
+        e1_h = self.entity_fc_layer(e1_h)
+        e2_h = self.entity_fc_layer(e2_h)
+
+        #concat 후 분류
+        concat_h = torch.cat([pooled_output, e1_h, e2_h, e3_h, e4_h], dim=-1)  # (batch_size, hidden_dim * 5)
+        return concat_h  
+
+    def process(self, head_ids, input_ids, attention_mask, token_type_ids=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        # Extract outputs from the body
+        x = self.get_classifier_input(input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask) 
+        # get classifier input for RBERT
+
+        logits = []
+        #binary_logits = self.binary_classifier(x)
+        #binary_labels = torch.argmax(binary_logits,1)
+        for i,l in enumerate(head_ids.tolist()):
+            if(l in [0,6]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_0(x[i,:]))
+            elif(l in [1,7]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_1(x[i,:]))
+            elif(l in [2,8]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_2(x[i,:]))
+            elif(l in [3,9]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_3(x[i,:]))
+            elif(l in [4,10]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_4(x[i,:]))
+            elif(l in [5,11]): # 0,1,2,3,4,5
+                logits.append(self.label_classifier_5(x[i,:]))
+            
+        logits = torch.stack(logits,0)
+        return logits    # (batch_size, 2), (batch_size, 30)
+
+
+    @autocast() 
+    def forward(self, input_ids, attention_mask, token_type_ids=None, labels=None,
+                e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
+        
+        head_ids = attention_mask[:,0].clone().detach()
+        attention_mask[:,0] = 1
+
+        logits = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        loss = None
+        if labels is not None:
+            loss_fct = self.loss_fct
+            #binary_labels = torch.tensor([i if i==0 else 1 for i in labels], device="cuda")
+            #binary_loss = loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            if(self.conf.train.rdrop):
+                loss = self.rdrop(logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+            return loss, logits
+        return logits
+
+
+    def rdrop(self, logits, labels, head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask, alpha=0.1):
+        logits2 = self.process(head_ids, input_ids, attention_mask, token_type_ids, e1_mask, e2_mask, e3_mask, e4_mask)
+        # cross entropy loss for classifier
+        logits = logits.view(-1, self.num_labels)
+        logits2 = logits.view(-1, self.num_labels)
+        
+        ce_loss = 0.5 * (self.loss_fct(logits, labels.view(-1)) + self.loss_fct(logits2, labels.view(-1)))
+        kl_loss = loss_module.compute_kl_loss(logits, logits2)
+        # carefully choose hyper-parameters
+        loss = ce_loss + alpha * kl_loss
+        return loss
 
 
 class AuxiliaryModel2WithRBERT(AuxiliaryModelWithRBERT):
@@ -476,8 +869,7 @@ class AuxiliaryModel2WithRBERT(AuxiliaryModelWithRBERT):
         self.label_classifier_0 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
         self.label_classifier_1 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
         self.label_classifier_2 = FCLayer(self.hidden_dim * 5, self.num_labels, 0.1)
-        self.weight = [0.5, 0.5]
-        #self.weight2 = [0.8, 0.2]
+        self.weight = [conf.model.weight1, conf.model.weight2]
         
     def process(self, input_ids, attention_mask, token_type_ids=None,
                 e1_mask=None, e2_mask=None, e3_mask=None, e4_mask=None):
@@ -539,6 +931,108 @@ class AuxiliaryModel2WithRBERT(AuxiliaryModelWithRBERT):
         return self.weight[0]*binary_loss + self.weight[1]*loss
 
 
+class AuxiliaryModelWithRECENT(AuxiliaryModel):
+    '''
+        binary label인지를 분류하는 binary_classification task를 추가한 모델
+        binary_classifier에서 나온 logit(batch_size, 2)에 argmax를 취해 0인지 1인지 판별 후
+        0이라면 label_classifier_0 레이어에, 1이라면 label_classifier_1 레이어에 넣어 각각 logit을 판단한다.
+        그 후 binary_classifier의 loss와 label_classifier의 loss를 더해서 backpropagation -> binary_classifier과 classifier가 모두 학습.
+
+        데이터 -> Pretrained 모델 -> binary_classifier(batch_size,2) -> label_classifier_0/label_classifier_1 -> add loss -> return
+    '''
+    def __init__(self, conf, new_vocab_size):
+        super().__init__(conf, new_vocab_size)
+        self.num_labels = 30
+        self.conf = conf
+        self.model_name = conf.model.model_name
+        # Load Model with given checkpoint and extract its body
+        self.model = AutoModel.from_pretrained(self.model_name)
+        self.model.resize_token_embeddings(new_vocab_size)
+        self.hidden_dim = self.model.config.hidden_size
+        self.loss_fct = loss_module.loss_config[conf.train.loss]
+
+        self.binary_classifier = FCLayer(self.hidden_dim, 2)
+        self.label_classifier_0 = FCLayer(self.hidden_dim, self.num_labels, False)
+        self.label_classifier_1 = FCLayer(self.hidden_dim, self.num_labels, False)
+        self.weight = [0.5, 0.5]
+        self.label_ids = {0: [0, 1, 2, 3, 5, 7, 19, 20, 28], 1: [0, 1, 2, 3, 5, 7, 19, 20, 28], 2: [0, 5, 7, 18, 19, 20, 22], 3: [0, 1, 2, 3, 5, 7, 19, 20],
+                    4: [0, 1, 2, 3, 5, 7, 19, 20, 28], 5: [0, 1, 2, 3, 5, 7, 9, 20], 6: [0, 2, 4, 6, 8, 10, 12, 13, 14, 15, 16, 17, 21, 24, 26, 27],
+                    7: [0, 4, 6, 8, 10, 11, 12, 13, 14, 15, 17, 23, 24, 26, 27, 29], 8: [0, 4, 6, 10, 11, 14, 15, 17, 21, 24, 25, 26, 27],
+                    9: [0, 4, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 21, 23, 24, 26, 27, 28, 29], 10: [0, 4, 6, 8, 10, 11, 12, 13, 14, 15, 16, 17, 21, 27, 29],
+                    11: [0, 4, 6, 10, 12, 15, 21, 24, 25]}
+        
+        self.classifiers = nn.ModuleList()
+        for i in range(12):
+            self.classifiers.append(FCLayer(self.hidden_dim, len(self.label_ids[i]), 0.0))
+
+    def process(self, input_ids=None, attention_mask=None, token_type_ids=None):
+        # Extract outputs from the body
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        # Add custom layers
+        x = outputs[1]  # take <s> token (equiv. to [CLS])  (batch_size, hidden_dim)
+        recent_logits = {}
+        for i in range(12):
+            head = self.classifiers[i]
+            recent_logits[i] = head(x)        
+        logits = []
+        binary_logits = self.binary_classifier(x)
+        binary_labels = torch.argmax(binary_logits,1)
+        for i,l in enumerate(binary_labels.tolist()):
+            if(l == 0):
+                logits.append(self.label_classifier_0(x[i,:]))
+            else:
+                logits.append(self.label_classifier_1(x[i,:]))          
+        logits = torch.stack(logits,0)
+        return binary_logits, logits, recent_logits    # (batch_size, 2), (batch_size, 30)
+
+    def gather_logits(self, input_ids, head_ids, head_logits):
+        # first, scatter
+        scattered = []
+        bsz = input_ids.shape[0]
+        for logit, ind in zip(head_logits.values(), self.label_ids.values()):
+            z = torch.ones(bsz, self.num_labels,
+                        device=logit.device, dtype=logit.dtype) * 1e-07
+            ind = torch.tensor(ind, device=input_ids.device).repeat(bsz, 1)
+            scattered.append(z.scatter(1, ind, logit))
+        del z, ind, logit
+        # second gather
+        cat_logits = torch.cat(
+            [tensor.view(bsz, 1, -1) for tensor in scattered],
+            dim=1,
+        )
+        del scattered
+        ind = head_ids.detach().view(-1, 1, 1)
+        ind = ind.repeat(1, 1, self.num_labels)
+        logits = cat_logits.gather(-2, ind).squeeze()
+        del ind, cat_logits
+        torch.cuda.empty_cache()
+        return logits
+
+    @autocast() 
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None):
+        head_ids = attention_mask[:,0].clone().detach()
+        attention_mask[:,0] = 1
+        binary_logits, logits, head_logits = self.process(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        gather_logits = self.gather_logits(input_ids, head_ids, head_logits)
+
+        loss = loss_module.compute_kl_loss(logits, gather_logits)
+        if labels is not None:
+            binary_labels = torch.tensor([0 if l==0 else 1 for l in labels], device="cuda") # (batch_size,)
+            binary_loss = self.loss_fct(binary_logits.view(-1, 2), binary_labels.view(-1))
+            loss += self.loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            loss += self.weight[0]*binary_loss + self.weight[1]+loss
+
+            for ix in range(12):
+                candidates = self.label_ids[ix]
+                n_labels = len(self.label_ids[ix])
+                weight = torch.tensor([0.05] + [1] * (n_labels - 1),
+                                    device=logits.device)
+                loss_fct = nn.CrossEntropyLoss(weight=weight)
+                label = torch.tensor([candidates.index(l) if l in candidates else 0 for l in labels], device='cuda')
+                head_loss = loss_fct(head_logits[ix].view(-1, n_labels), label.view(-1))
+                loss += head_loss
+            return loss, logits
+        return logits
 
 
 class RECENTModel(nn.Module):
