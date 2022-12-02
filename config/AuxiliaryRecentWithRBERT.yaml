@@ -6,7 +6,7 @@ path:
   # inference를 하는 경우 로드할 모델의 경로를 입력해주세요.
   load_model_path: /opt/ml/level2_klue_nlp-level2-nlp-05/best_model/klue-roberta-large/26-08-28/pytorch_model.bin
 model:
-  model_class_name: SimpleRECENTWithRBERT #model.py에서 사용할 모델 이름
+  model_class_name: AuxiliaryRECENTWithRBERT #model.py에서 사용할 모델 이름
   # Model : Model
   # CustomRBERT : RBERT(tem=2로 설정할 것)
   model_name: klue/roberta-large
